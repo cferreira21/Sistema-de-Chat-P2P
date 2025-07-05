@@ -99,7 +99,11 @@ class P2PChat:
         
         # Conecta ao par inicial se fornecido
         if self.initial_peer_ip:
-            self._connect_to_peer(self.initial_peer_ip)
+            print(f"Conectando ao peer inicial: {self.initial_peer_ip}")
+            if self._connect_to_peer(self.initial_peer_ip):
+                # Solicita histórico inicial
+                time.sleep(1)  # Aguarda estabilização da conexão
+                self._request_history_from_peers()
         
         # Inicia threads auxiliares
         threading.Thread(target=self._peer_discovery_loop, daemon=True).start()
