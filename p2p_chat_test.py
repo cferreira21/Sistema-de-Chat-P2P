@@ -35,7 +35,7 @@ def test_basic_functionality():
     
     # Teste 1: Validação de histórico vazio
     print("\n1. Testando validação de histórico vazio...")
-    from p2p_chat import P2PChat
+    from p2p_chat_base import P2PChat
     
     chat_system = P2PChat()
     assert chat_system._validate_history([]) == True
@@ -43,7 +43,7 @@ def test_basic_functionality():
     
     # Teste 2: Serialização e deserialização
     print("\n2. Testando serialização/deserialização...")
-    from p2p_chat import Chat
+    from p2p_chat_base import Chat
     import hashlib
     
     # Cria um chat de teste
@@ -67,7 +67,7 @@ def test_basic_functionality():
     # Teste 3: Estrutura de mensagens
     print("\n3. Testando estrutura de mensagens...")
     import struct
-    from p2p_chat import MessageType
+    from p2p_chat_base import MessageType
     
     # Teste PeerRequest
     peer_request = struct.pack('B', MessageType.PEER_REQUEST)
@@ -97,7 +97,7 @@ def create_test_history():
     """Cria um histórico de teste para demonstração"""
     print("\n=== Criando Histórico de Teste ===")
     
-    from p2p_chat import Chat, P2PChat
+    from p2p_chat_base import Chat, P2PChat
     import hashlib
     import struct
     
