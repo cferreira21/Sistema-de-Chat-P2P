@@ -353,12 +353,56 @@ class P2PChat:
         return chat_count * (1 + 50 + VERIFICATION_CODE_SIZE + MD5_SIZE)
     
     def _validate_history(self, history: List[Chat]) -> bool:
-        """Valida um histórico de chats"""
+        """Valida um histórico de chats recursivamente"""
         if not history:
             return True
         
-        # Implementação da validação será feita na próxima parte
-        return True
+        # Validação recursiva - valida o histórico sem a última mensagem primeiro
+        if len(history) > 1:
+            if not self._validate_history(history[:-1]):
+                return False
+        
+        # Valida a última mensagem
+        return self._validate_last_chat(history)
+    
+    def _validate_last_chat(self, history: List[Chat]) -> bool:
+        """Valida a última mensagem do histórico"""
+        if not history:
+            return True
+        
+        last_chat = history[-1]
+        
+        # Verifica se o hash MD5 começa com dois bytes zero
+        if last_chat.md5_hash[:HASH_PREFIX_ZEROS] != b'\x00' * HASH_PREFIX_ZEROS:
+            return False
+        
+        # Calcula o hash MD5 esperado
+        expected_hash = self._calculate_chat_hash(history)
+        
+        # Compara com o hash armazenado
+        return last_chat.md5_hash == expected_hash
+    
+    def _calculate_chat_hash(self, history: List[Chat]) -> bytes:
+        """Calcula o hash MD5 para validação do último chat"""
+        if not history:
+            return b'\x00' * MD5_SIZE
+        
+        # Pega os últimos 20 chats (ou todos se houver menos de 20)
+        chats_to_hash = history[-HISTORY_VALIDATION_SIZE:]
+        
+        # Constrói a sequência S para hash
+        sequence = b''
+        for i, chat in enumerate(chats_to_hash):
+            if i == len(chats_to_hash) - 1:
+                # Para o último chat, não inclui o hash MD5
+                sequence += struct.pack('B', len(chat.text))
+                sequence += chat.text.encode('ascii')
+                sequence += chat.verification_code
+            else:
+                # Para outros chats, inclui tudo
+                sequence += chat.to_bytes()
+        
+        return hashlib.md5(sequence).digest()
     
     def _main_loop(self):
         """Loop principal da interface"""
@@ -372,6 +416,12 @@ class P2PChat:
                     self._show_peers()
                 elif command == 'history':
                     self._show_history()
+                elif command == 'request':
+                    self._request_history_from_peers()
+                elif command == 'validate':
+                    self._validate_current_history()
+                elif command == 'status':
+                    self._show_status()
                 elif command.startswith('connect '):
                     ip = command[8:].strip()
                     self._connect_to_peer(ip)
@@ -397,8 +447,11 @@ class P2PChat:
         print("  help              - Mostra esta ajuda")
         print("  peers             - Lista peers conectados")
         print("  history           - Mostra histórico de chats")
+        print("  request           - Solicita histórico de todos os peers")
         print("  connect <ip>      - Conecta a um peer específico")
         print("  chat <mensagem>   - Envia uma mensagem de chat")
+        print("  validate          - Valida o histórico atual")
+        print("  status            - Mostra status do sistema")
         print("  quit              - Encerra o programa")
     
     def _show_peers(self):
@@ -423,8 +476,93 @@ class P2PChat:
     
     def _send_chat(self, message: str):
         """Envia uma mensagem de chat"""
-        # Implementação da mineração será feita na próxima parte
-        print(f"Enviando chat: {message}")
+        if len(message) > MAX_CHAT_LENGTH:
+            print(f"Mensagem muito longa (máximo {MAX_CHAT_LENGTH} caracteres)")
+            return
+        
+        # Verifica se a mensagem contém apenas caracteres alfanuméricos e espaços
+        if not all(c.isalnum() or c.isspace() for c in message):
+            print("Mensagem deve conter apenas caracteres alfanuméricos e espaços")
+            return
+        
+        print(f"Minerando chat: '{message}'...")
+        
+        # Minera o chat em thread separada para não bloquear a interface
+        threading.Thread(target=self._mine_and_send_chat, args=(message,), daemon=True).start()
+    
+    def _mine_and_send_chat(self, message: str):
+        """Minera um chat e o envia para todos os peers"""
+        try:
+            # Minera o chat
+            new_chat = self._mine_chat(message)
+            
+            if new_chat:
+                # Adiciona ao histórico local
+                with self.history_lock:
+                    self.chat_history.append(new_chat)
+                    print(f"Chat minerado e adicionado ao histórico: '{message}'")
+                
+                # Envia para todos os peers
+                self._broadcast_history()
+            else:
+                print("Erro ao minerar o chat")
+                
+        except Exception as e:
+            print(f"Erro ao minerar chat: {e}")
+    
+    def _mine_chat(self, message: str) -> Optional[Chat]:
+        """Minera um chat encontrando um código verificador válido"""
+        start_time = time.time()
+        attempts = 0
+        
+        while True:
+            attempts += 1
+            
+            # Gera código verificador aleatório
+            verification_code = bytes([random.randint(0, 255) for _ in range(VERIFICATION_CODE_SIZE)])
+            
+            # Cria chat temporário
+            temp_chat = Chat(message, verification_code, b'\x00' * MD5_SIZE)
+            
+            # Cria histórico temporário
+            with self.history_lock:
+                temp_history = self.chat_history + [temp_chat]
+            
+            # Calcula hash
+            calculated_hash = self._calculate_chat_hash(temp_history)
+            
+            # Verifica se o hash começa com dois bytes zero
+            if calculated_hash[:HASH_PREFIX_ZEROS] == b'\x00' * HASH_PREFIX_ZEROS:
+                # Sucesso! Cria o chat final
+                final_chat = Chat(message, verification_code, calculated_hash)
+                
+                elapsed = time.time() - start_time
+                print(f"Chat minerado com sucesso! Tentativas: {attempts}, Tempo: {elapsed:.2f}s")
+                return final_chat
+            
+            # Mostra progresso a cada 10000 tentativas
+            if attempts % 10000 == 0:
+                elapsed = time.time() - start_time
+                rate = attempts / elapsed if elapsed > 0 else 0
+                print(f"Minerando... Tentativas: {attempts}, Taxa: {rate:.0f}/s")
+    
+    def _broadcast_history(self):
+        """Envia o histórico atual para todos os peers"""
+        with self.history_lock:
+            history_data = self._serialize_history()
+            chat_count = len(self.chat_history)
+        
+        message = struct.pack('B', MessageType.ARCHIVE_RESPONSE)
+        message += struct.pack('!I', chat_count)
+        message += history_data
+        
+        with self.connections_lock:
+            for peer_ip, sock in list(self.connections.items()):
+                try:
+                    sock.send(message)
+                except Exception as e:
+                    print(f"Erro ao enviar histórico para {peer_ip}: {e}")
+                    self._disconnect_peer(peer_ip)
     
     def _shutdown(self):
         """Encerra o sistema"""
