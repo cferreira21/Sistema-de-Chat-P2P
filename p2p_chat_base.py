@@ -183,6 +183,57 @@ class P2PChat:
             print(f"Erro ao conectar com {peer_ip}: {e}")
             return False
     
+    def _request_history_from_peers(self):
+        """Solicita histórico de todos os peers conectados"""
+        with self.connections_lock:
+            peer_connections = list(self.connections.items())
+        
+        if not peer_connections:
+            print("Nenhum peer conectado para solicitar histórico")
+            return
+        
+        print(f"Solicitando histórico de {len(peer_connections)} peer(s)...")
+        
+        for peer_ip, sock in peer_connections:
+            try:
+                # Envia ArchiveRequest
+                message = struct.pack('B', MessageType.ARCHIVE_REQUEST)
+                sock.send(message)
+                print(f"Solicitação de histórico enviada para {peer_ip}")
+            except Exception as e:
+                print(f"Erro ao solicitar histórico de {peer_ip}: {e}")
+                self._disconnect_peer(peer_ip)
+    
+    def _validate_current_history(self):
+        """Valida o histórico atual"""
+        with self.history_lock:
+            if not self.chat_history:
+                print("Histórico vazio - válido")
+                return
+            
+            if self._validate_history(self.chat_history):
+                print(f"Histórico válido ({len(self.chat_history)} mensagens)")
+            else:
+                print("Histórico inválido!")
+    
+    def _show_status(self):
+        """Mostra status do sistema"""
+        with self.peers_lock:
+            peer_count = len(self.peers)
+        
+        with self.connections_lock:
+            connection_count = len(self.connections)
+        
+        with self.history_lock:
+            history_count = len(self.chat_history)
+        
+        print(f"\nStatus do sistema:")
+        print(f"  Meu IP: {self.my_ip}:{PORT}")
+        print(f"  Peers conhecidos: {peer_count}")
+        print(f"  Conexões ativas: {connection_count}")
+        print(f"  Mensagens no histórico: {history_count}")
+        print(f"  Sistema rodando: {'Sim' if self.running else 'Não'}")
+
     def _handle_peer_messages(self, peer_ip: str, sock: socket.socket):
         """Lida com mensagens de um peer específico"""
         try:
