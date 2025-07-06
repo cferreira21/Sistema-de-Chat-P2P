@@ -359,32 +359,58 @@ class P2PChat:
     
     def _handle_archive_response(self, peer_ip: str, sock: socket.socket):
         """Lida com uma mensagem ArchiveResponse"""
-        # Lê o número de chats
-        count_data = sock.recv(4)
-        if len(count_data) < 4:
-            return
-        
-        chat_count = struct.unpack('!I', count_data)[0]
-        
-        # Lê os dados do histórico
-        history_data = b''
-        expected_size = self._calculate_history_size(chat_count)
-        
-        while len(history_data) < expected_size:
-            chunk = sock.recv(expected_size - len(history_data))
-            if not chunk:
+        try:
+            # Lê o número de chats
+            count_data = sock.recv(4)
+            if len(count_data) < 4:
                 return
-            history_data += chunk
-        
-        # Deserializa o histórico
-        new_history = self._deserialize_history(history_data)
-        
-        # Valida o histórico
-        if self._validate_history(new_history):
-            with self.history_lock:
-                if len(new_history) > len(self.chat_history):
-                    self.chat_history = new_history
-                    print(f"Histórico atualizado com {len(new_history)} chats")
+            
+            chat_count = struct.unpack('!I', count_data)[0]
+            
+            # Lê cada chat individualmente
+            new_history = []
+            for _ in range(chat_count):
+                # Lê o tamanho do texto (1 byte)
+                text_len_data = sock.recv(1)
+                if not text_len_data:
+                    return
+                
+                text_len = struct.unpack('B', text_len_data)[0]
+                
+                # Lê o texto
+                text_data = sock.recv(text_len)
+                if len(text_data) != text_len:
+                    return
+                
+                # Lê o verification code
+                verification_code = sock.recv(VERIFICATION_CODE_SIZE)
+                if len(verification_code) != VERIFICATION_CODE_SIZE:
+                    return
+                
+                # Lê o MD5 hash
+                md5_hash = sock.recv(MD5_SIZE)
+                if len(md5_hash) != MD5_SIZE:
+                    return
+                
+                # Cria o chat
+                text = text_data.decode('ascii')
+                chat = Chat(text, verification_code, md5_hash)
+                new_history.append(chat)
+            
+            # Valida o histórico
+            if self._validate_history(new_history):
+                with self.history_lock:
+                    if len(new_history) > len(self.chat_history):
+                        self.chat_history = new_history
+                        print(f"Histórico atualizado com {len(new_history)} chats de {peer_ip}")
+                    elif len(new_history) == len(self.chat_history):
+                        print(f"Histórico recebido de {peer_ip} tem mesmo tamanho ({len(new_history)} chats)")
+                    else:
+                        print(f"Histórico recebido de {peer_ip} é menor ({len(new_history)} vs {len(self.chat_history)})")
+            else:
+                print(f"Histórico inválido recebido de {peer_ip} com {len(new_history)} chats")
+        except Exception as e:
+            print(f"Erro ao processar ArchiveResponse de {peer_ip}: {e}")
     
     def _serialize_history(self) -> bytes:
         """Serializa o histórico de chats"""
@@ -403,12 +429,6 @@ class P2PChat:
             history.append(chat)
         
         return history
-    
-    def _calculate_history_size(self, chat_count: int) -> int:
-        """Calcula o tamanho esperado do histórico (estimativa)"""
-        # Estimativa baseada no tamanho médio dos chats
-        # Na prática, seria melhor ler dinamicamente
-        return chat_count * (1 + 50 + VERIFICATION_CODE_SIZE + MD5_SIZE)
     
     def _validate_history(self, history: List[Chat]) -> bool:
         """Valida um histórico de chats recursivamente"""
@@ -615,9 +635,16 @@ class P2PChat:
         message += history_data
         
         with self.connections_lock:
+            peer_count = len(self.connections)
+            if peer_count > 0:
+                print(f"Enviando histórico com {chat_count} chats para {peer_count} peer(s)")
+            else:
+                print("Nenhum peer conectado para enviar histórico")
+                
             for peer_ip, sock in list(self.connections.items()):
                 try:
                     sock.send(message)
+                    print(f"Histórico enviado para {peer_ip}")
                 except Exception as e:
                     print(f"Erro ao enviar histórico para {peer_ip}: {e}")
                     self._disconnect_peer(peer_ip)
