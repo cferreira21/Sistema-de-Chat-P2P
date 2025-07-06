@@ -66,8 +66,9 @@ class Chat:
 class P2PChat:
     """Classe principal do sistema de chat P2P"""
     
-    def __init__(self, initial_peer_ip: Optional[str] = None):
-        self.my_ip = self._get_local_ip()
+    def __init__(self, initial_peer_ip: Optional[str] = None, bind_ip: Optional[str] = None):
+        self.bind_ip = bind_ip  # IP específico para bind
+        self.my_ip = bind_ip if bind_ip else self._get_local_ip()
         self.peers: Set[str] = set()
         self.connections: Dict[str, socket.socket] = {}
         self.chat_history: List[Chat] = []
@@ -120,7 +121,9 @@ class P2PChat:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         try:
-            self.server_socket.bind(('', PORT))
+            # Bind to specific IP instead of all interfaces
+            bind_address = self.bind_ip if self.bind_ip else ''
+            self.server_socket.bind((bind_address, PORT))
             self.server_socket.listen(10)
             threading.Thread(target=self._accept_connections, daemon=True).start()
         except Exception as e:
@@ -591,11 +594,15 @@ class P2PChat:
 def main():
     """Função principal"""
     initial_peer = None
+    bind_ip = None
     
     if len(sys.argv) > 1:
         initial_peer = sys.argv[1]
     
-    chat_system = P2PChat(initial_peer)
+    if len(sys.argv) > 2:
+        bind_ip = sys.argv[2]
+    
+    chat_system = P2PChat(initial_peer, bind_ip)
     chat_system.start()
 
 if __name__ == "__main__":
