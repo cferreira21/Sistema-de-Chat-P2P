@@ -486,6 +486,7 @@ class P2PChat:
                         text = text_data.decode('utf-8', errors='replace')
                         print(f"Chat {i}: texto decodificado como UTF-8 (pode conter caracteres substituídos)")
                     chat = Chat(text, verification_code, md5_hash)
+                    print(f"codigo de verificação: '{chat.verification_code.hex()}', md5_hash: '{chat.md5_hash.hex()}'")
                     new_history.append(chat)
                 except Exception as e:
                     print(f"Erro ao decodificar texto do chat {i}: {e}")
