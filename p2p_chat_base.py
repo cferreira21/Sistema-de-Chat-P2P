@@ -155,32 +155,52 @@ class P2PChat:
     
     def _connect_to_peer(self, peer_ip: str) -> bool:
         """Conecta a um peer específico"""
-        if peer_ip == self.my_ip:
+        # Resolve hostname to IP if needed
+        try:
+            resolved_ip = socket.gethostbyname(peer_ip)
+        except socket.gaierror:
+            print(f"Erro ao resolver hostname {peer_ip}")
+            return False
+        
+        if resolved_ip == self.my_ip:
+            print(f"Tentativa de conectar ao próprio IP {resolved_ip} - ignorando")
             return False
         
         with self.connections_lock:
-            if peer_ip in self.connections:
+            if resolved_ip in self.connections:
+                print(f"Já conectado ao peer {resolved_ip}")
                 return True
         
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((peer_ip, PORT))
+            sock.settimeout(5)  # Reduced timeout to 5 seconds for faster discovery
+            sock.connect((peer_ip, PORT))  # Connect using original hostname
             
             with self.connections_lock:
-                self.connections[peer_ip] = sock
+                self.connections[resolved_ip] = sock  # Store using resolved IP
             
             with self.peers_lock:
-                self.peers.add(peer_ip)
+                self.peers.add(resolved_ip)  # Store using resolved IP
             
             # Inicia thread para lidar com mensagens deste peer
             threading.Thread(target=self._handle_peer_messages, 
-                           args=(peer_ip, sock), daemon=True).start()
+                           args=(resolved_ip, sock), daemon=True).start()
             
-            print(f"Conectado ao peer {peer_ip}")
+            print(f"Conectado ao peer {peer_ip} (IP: {resolved_ip})")
+            
+            # Envia PeerRequest imediatamente após conectar
+            try:
+                self._send_peer_request(sock)
+                print(f"PeerRequest enviado para {resolved_ip}")
+            except Exception as e:
+                print(f"Erro ao enviar PeerRequest inicial para {resolved_ip}: {e}")
+                self._disconnect_peer(resolved_ip)
+                return False
+            
             return True
             
         except Exception as e:
-            print(f"Erro ao conectar com {peer_ip}: {e}")
+            ##print(f"Erro ao conectar com {peer_ip}: {e}")
             return False
     
     def _request_history_from_peers(self):
@@ -234,9 +254,22 @@ class P2PChat:
         print(f"  Mensagens no histórico: {history_count}")
         print(f"  Sistema rodando: {'Sim' if self.running else 'Não'}")
 
+    def _recv_exact(self, sock: socket.socket, size: int) -> bytes:
+        """Lê exatamente 'size' bytes do socket"""
+        data = b''
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("Conexão fechada durante leitura")
+            data += chunk
+        return data
+
     def _handle_peer_messages(self, peer_ip: str, sock: socket.socket):
         """Lida com mensagens de um peer específico"""
         try:
+            # Set a timeout for receiving data
+            sock.settimeout(30)
+            
             while self.running:
                 # Lê o tipo da mensagem (1 byte)
                 msg_type_data = sock.recv(1)
@@ -246,18 +279,42 @@ class P2PChat:
                 msg_type = struct.unpack('B', msg_type_data)[0]
                 
                 if msg_type == MessageType.PEER_REQUEST:
+                    #print(f"Recebido PeerRequest de {peer_ip}")
                     self._handle_peer_request(peer_ip, sock)
                 elif msg_type == MessageType.PEER_LIST:
+                    #print(f"Recebido PeerList de {peer_ip}")
                     self._handle_peer_list(peer_ip, sock)
                 elif msg_type == MessageType.ARCHIVE_REQUEST:
+                    #print(f"Recebido ArchiveRequest de {peer_ip}")
                     self._handle_archive_request(peer_ip, sock)
                 elif msg_type == MessageType.ARCHIVE_RESPONSE:
+                    print(f"Recebido ArchiveResponse de {peer_ip}")
                     self._handle_archive_response(peer_ip, sock)
                 else:
-                    print(f"Tipo de mensagem desconhecido: {msg_type}")
+                    print(f"Tipo de mensagem desconhecido de {peer_ip}: {msg_type} (0x{msg_type:02x})")
+                    # Lê alguns bytes extras para debug
+                    try:
+                        extra_data = sock.recv(32)
+                        if extra_data:
+                            print(f"Dados recebidos: {(bytes([msg_type]) + extra_data[:16]).hex()}")
+                            # Try to decode as ASCII for debugging
+                            try:
+                                ascii_data = (bytes([msg_type]) + extra_data[:16]).decode('ascii', errors='ignore')
+                                print(f"Dados como ASCII: '{ascii_data}'")
+                            except:
+                                pass
+                    except:
+                        pass
+                    # Desconecta o peer pois o protocolo não é compatível
+                    print(f"Desconectando {peer_ip} devido a tipo de mensagem desconhecido")
+                    break
                     
+        except socket.timeout:
+            print(f"Timeout na conexão com {peer_ip}")
         except Exception as e:
             print(f"Erro ao lidar com mensagens de {peer_ip}: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self._disconnect_peer(peer_ip)
     
@@ -312,38 +369,48 @@ class P2PChat:
         message += struct.pack('!I', len(peer_list))
         
         for ip in peer_list:
-            # Converte IP para inteiro de 4 bytes
-            ip_parts = ip.split('.')
-            ip_int = struct.pack('!BBBB', int(ip_parts[0]), int(ip_parts[1]), 
-                               int(ip_parts[2]), int(ip_parts[3]))
-            message += ip_int
+            try:
+                # Converte IP para inteiro de 4 bytes
+                ip_parts = ip.split('.')
+                if len(ip_parts) != 4:
+                    continue  # Skip invalid IP format
+                ip_int = struct.pack('!BBBB', int(ip_parts[0]), int(ip_parts[1]), 
+                                   int(ip_parts[2]), int(ip_parts[3]))
+                message += ip_int
+            except (ValueError, IndexError):
+                # Skip invalid IP addresses
+                continue
         
         sock.send(message)
     
     def _handle_peer_list(self, peer_ip: str, sock: socket.socket):
         """Lida com uma mensagem PeerList"""
-        # Lê o número de peers
-        count_data = sock.recv(4)
-        if len(count_data) < 4:
-            return
-        
-        peer_count = struct.unpack('!I', count_data)[0]
-        
-        # Lê os IPs dos peers
-        new_peers = []
-        for _ in range(peer_count):
-            ip_data = sock.recv(4)
-            if len(ip_data) < 4:
-                return
+        try:
+            # Lê o número de peers
+            count_data = self._recv_exact(sock, 4)
+            peer_count = struct.unpack('!I', count_data)[0]
             
-            ip_parts = struct.unpack('!BBBB', ip_data)
-            ip_str = '.'.join(str(part) for part in ip_parts)
-            new_peers.append(ip_str)
-        
-        # Conecta aos novos peers
-        for new_peer_ip in new_peers:
-            if new_peer_ip != self.my_ip:
-                self._connect_to_peer(new_peer_ip)
+            # Lê os IPs dos peers
+            new_peers = []
+            for _ in range(peer_count):
+                ip_data = self._recv_exact(sock, 4)
+                ip_parts = struct.unpack('!BBBB', ip_data)
+                ip_str = '.'.join(str(part) for part in ip_parts)
+                new_peers.append(ip_str)
+            
+            ##print(f"Recebida lista de {len(new_peers)} peers de {peer_ip}: {new_peers}")
+            
+            # Conecta aos novos peers em threads separadas para evitar bloqueio
+            for new_peer_ip in new_peers:
+                if new_peer_ip != self.my_ip:
+                    # Verifica se já está conectado
+                    with self.connections_lock:
+                        if new_peer_ip not in self.connections:
+                            # Conecta em thread separada para não bloquear
+                            threading.Thread(target=self._connect_to_peer, 
+                                           args=(new_peer_ip,), daemon=True).start()
+        except Exception as e:
+            print(f"Erro ao processar PeerList de {peer_ip}: {e}")
     
     def _handle_archive_request(self, peer_ip: str, sock: socket.socket):
         """Lida com uma mensagem ArchiveRequest"""
@@ -361,43 +428,129 @@ class P2PChat:
         """Lida com uma mensagem ArchiveResponse"""
         try:
             # Lê o número de chats
-            count_data = sock.recv(4)
-            if len(count_data) < 4:
+            try:
+                count_data = self._recv_exact(sock, 4)
+            except ConnectionError:
+                print(f"Erro: não conseguiu ler count field de ArchiveResponse de {peer_ip}")
                 return
             
             chat_count = struct.unpack('!I', count_data)[0]
+            print(f"ArchiveResponse de {peer_ip}: {chat_count} chats")
+            
+            # Valida o número de chats para evitar valores absurdos
+            if chat_count > 10000:  # Limite razoável
+                print(f"Número de chats muito alto ({chat_count}), possível erro de protocolo")
+                return
             
             # Lê cada chat individualmente
             new_history = []
-            for _ in range(chat_count):
+            for i in range(chat_count):
                 # Lê o tamanho do texto (1 byte)
-                text_len_data = sock.recv(1)
-                if not text_len_data:
+                try:
+                    text_len_data = self._recv_exact(sock, 1)
+                except ConnectionError:
+                    print(f"Erro: não conseguiu ler tamanho do texto do chat {i}")
                     return
                 
                 text_len = struct.unpack('B', text_len_data)[0]
+                ##print(f"Chat {i}: text_len = {text_len}")
+                
+                # Lê o texto de forma robusta
+                try:
+                    text_data = self._recv_exact(sock, text_len)
+                except ConnectionError:
+                    print(f"Erro: conexão fechada ao ler texto do chat {i}")
+                    return
+                
+                ##print(f"Chat {i}: text_data (hex) = {text_data.hex()}")
+                
+                # Lê o verification code de forma robusta
+                try:
+                    verification_code = self._recv_exact(sock, VERIFICATION_CODE_SIZE)
+                except ConnectionError:
+                    print(f"Erro: conexão fechada ao ler verification code do chat {i}")
+                    return
+                
+                # Lê o MD5 hash de forma robusta
+                try:
+                    md5_hash = self._recv_exact(sock, MD5_SIZE)
+                except ConnectionError:
+                    print(f"Erro: conexão fechada ao ler MD5 hash do chat {i}")
+                    return
+                
+                # Cria o chat
+                try:
+                    try:
+                        text = text_data.decode('ascii')
+                    except UnicodeDecodeError:
+                        text = text_data.decode('utf-8', errors='replace')
+                        print(f"Chat {i}: texto decodificado como UTF-8 (pode conter caracteres substituídos)")
+                    chat = Chat(text, verification_code, md5_hash)
+                    new_history.append(chat)
+                except Exception as e:
+                    print(f"Erro ao decodificar texto do chat {i}: {e}")
+                    return
+            
+            # Valida o histórico
+            if self._validate_history(new_history):
+                with self.history_lock:
+                    if len(new_history) > len(self.chat_history):
+                        self.chat_history = new_history
+                        print(f"Histórico atualizado com {len(new_history)} chats de {peer_ip}")
+                    elif len(new_history) == len(self.chat_history):
+                        print(f"Histórico recebido de {peer_ip} tem mesmo tamanho ({len(new_history)} chats)")
+                    else:
+                        print(f"Histórico recebido de {peer_ip} é menor ({len(new_history)} vs {len(self.chat_history)})")
+            else:
+                print(f"Histórico inválido recebido de {peer_ip} com {len(new_history)} chats")
+        except Exception as e:
+            print(f"Erro ao processar ArchiveResponse de {peer_ip}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _handle_archive_response_with_count(self, peer_ip: str, sock: socket.socket, chat_count: int):
+        """Lida com uma mensagem ArchiveResponse quando o count já foi lido"""
+        try:
+            print(f"Processando ArchiveResponse de {peer_ip} com {chat_count} chats")
+            
+            # Lê cada chat individualmente
+            new_history = []
+            for i in range(chat_count):
+                # Lê o tamanho do texto (1 byte)
+                text_len_data = sock.recv(1)
+                if not text_len_data:
+                    print(f"Erro: não conseguiu ler tamanho do texto do chat {i}")
+                    return
+                
+                text_len = struct.unpack('B', text_len_data)[0]
+                print(f"Chat {i}: tamanho do texto = {text_len}")
                 
                 # Lê o texto
                 text_data = sock.recv(text_len)
                 if len(text_data) != text_len:
+                    print(f"Erro: esperava {text_len} bytes de texto, recebeu {len(text_data)}")
                     return
                 
                 # Lê o verification code
                 verification_code = sock.recv(VERIFICATION_CODE_SIZE)
                 if len(verification_code) != VERIFICATION_CODE_SIZE:
+                    print(f"Erro: esperava {VERIFICATION_CODE_SIZE} bytes de verification code, recebeu {len(verification_code)}")
                     return
                 
                 # Lê o MD5 hash
                 md5_hash = sock.recv(MD5_SIZE)
                 if len(md5_hash) != MD5_SIZE:
+                    print(f"Erro: esperava {MD5_SIZE} bytes de MD5 hash, recebeu {len(md5_hash)}")
                     return
                 
                 # Cria o chat
                 text = text_data.decode('ascii')
                 chat = Chat(text, verification_code, md5_hash)
                 new_history.append(chat)
+                print(f"Chat {i}: '{text}'")
             
             # Valida o histórico
+            print(f"Validando histórico com {len(new_history)} chats...")
             if self._validate_history(new_history):
                 with self.history_lock:
                     if len(new_history) > len(self.chat_history):
