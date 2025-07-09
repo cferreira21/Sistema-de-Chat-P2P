@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-DCC Internet P2P Blockchain Chat
-Sistema de chat distribuído com verificação por blockchain
-"""
 
 import socket
 import threading
@@ -15,14 +11,8 @@ from typing import List, Dict, Set, Optional, Tuple
 from dataclasses import dataclass
 from enum import IntEnum
 
-# Constantes
 PORT = 51511
-PEER_REQUEST_INTERVAL = 5  # segundos
-MAX_CHAT_LENGTH = 255
-HASH_PREFIX_ZEROS = 2
-MD5_SIZE = 16
-VERIFICATION_CODE_SIZE = 16
-HISTORY_VALIDATION_SIZE = 20
+PEER_REQUEST_INTERVAL = 5
 
 class MessageType(IntEnum):
     """Tipos de mensagens do protocolo"""
@@ -55,11 +45,11 @@ class Chat:
         text = data[offset:offset+text_length].decode('ascii')
         offset += text_length
         
-        verification_code = data[offset:offset+VERIFICATION_CODE_SIZE]
-        offset += VERIFICATION_CODE_SIZE
+        verification_code = data[offset:offset+16]
+        offset += 16
         
-        md5_hash = data[offset:offset+MD5_SIZE]
-        offset += MD5_SIZE
+        md5_hash = data[offset:offset+16]
+        offset += 16
         
         return cls(text, verification_code, md5_hash), offset
 
@@ -75,6 +65,7 @@ class P2PChat:
         self.running = False
         self.server_socket = None
         self.initial_peer_ip = initial_peer_ip
+        self.debug = False
         
         # Locks para thread safety
         self.peers_lock = threading.Lock()
@@ -95,7 +86,6 @@ class P2PChat:
         """Inicia o sistema P2P"""
         self.running = True
         
-        # Inicia servidor para receber conexões
         self._start_server()
         
         # Conecta ao par inicial se fornecido
@@ -103,10 +93,9 @@ class P2PChat:
             print(f"Conectando ao peer inicial: {self.initial_peer_ip}")
             if self._connect_to_peer(self.initial_peer_ip):
                 # Solicita histórico inicial
-                time.sleep(1)  # Aguarda estabilização da conexão
+                time.sleep(1)
                 self._request_history_from_peers()
         
-        # Inicia threads auxiliares
         threading.Thread(target=self._peer_discovery_loop, daemon=True).start()
         
         print(f"Sistema P2P iniciado no IP {self.my_ip}:{PORT}")
@@ -121,7 +110,6 @@ class P2PChat:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         try:
-            # Bind to specific IP instead of all interfaces
             bind_address = self.bind_ip if self.bind_ip else ''
             self.server_socket.bind((bind_address, PORT))
             self.server_socket.listen(10)
@@ -143,7 +131,7 @@ class P2PChat:
                 with self.peers_lock:
                     self.peers.add(peer_ip)
                 
-                # Inicia thread para lidar com mensagens deste peer
+                # thread para lidar com mensagens de peer
                 threading.Thread(target=self._handle_peer_messages, 
                                args=(peer_ip, client_socket), daemon=True).start()
                 
@@ -155,7 +143,7 @@ class P2PChat:
     
     def _connect_to_peer(self, peer_ip: str) -> bool:
         """Conecta a um peer específico"""
-        # Resolve hostname to IP if needed
+        # Resolve hostname para IP se necessário
         try:
             resolved_ip = socket.gethostbyname(peer_ip)
         except socket.gaierror:
@@ -173,14 +161,14 @@ class P2PChat:
         
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)  # Reduced timeout to 5 seconds for faster discovery
-            sock.connect((peer_ip, PORT))  # Connect using original hostname
+            sock.settimeout(5) # timeout de tentativa de conexão a peer
+            sock.connect((peer_ip, PORT))
             
             with self.connections_lock:
-                self.connections[resolved_ip] = sock  # Store using resolved IP
+                self.connections[resolved_ip] = sock
             
             with self.peers_lock:
-                self.peers.add(resolved_ip)  # Store using resolved IP
+                self.peers.add(resolved_ip)
             
             # Inicia thread para lidar com mensagens deste peer
             threading.Thread(target=self._handle_peer_messages, 
@@ -200,7 +188,8 @@ class P2PChat:
             return True
             
         except Exception as e:
-            ##print(f"Erro ao conectar com {peer_ip}: {e}")
+            if self.debug: 
+                print(f"Erro ao conectar com {peer_ip}: {e}")
             return False
     
     def _request_history_from_peers(self):
@@ -219,7 +208,7 @@ class P2PChat:
                 # Envia ArchiveRequest
                 message = struct.pack('B', MessageType.ARCHIVE_REQUEST)
                 sock.send(message)
-                print(f"Solicitação de histórico enviada para {peer_ip}")
+                print(f"Archive request enviada para {peer_ip}")
             except Exception as e:
                 print(f"Erro ao solicitar histórico de {peer_ip}: {e}")
                 self._disconnect_peer(peer_ip)
@@ -253,9 +242,10 @@ class P2PChat:
         print(f"  Conexões ativas: {connection_count}")
         print(f"  Mensagens no histórico: {history_count}")
         print(f"  Sistema rodando: {'Sim' if self.running else 'Não'}")
+        print(f"  Debug mode: {'Ativado' if self.debug else 'Desativado'}")
 
     def _recv_exact(self, sock: socket.socket, size: int) -> bytes:
-        """Lê exatamente 'size' bytes do socket"""
+        """Lê exatamente size bytes do socket"""
         data = b''
         while len(data) < size:
             chunk = sock.recv(size - len(data))
@@ -267,7 +257,6 @@ class P2PChat:
     def _handle_peer_messages(self, peer_ip: str, sock: socket.socket):
         """Lida com mensagens de um peer específico"""
         try:
-            # Set a timeout for receiving data
             sock.settimeout(30)
             
             while self.running:
@@ -279,33 +268,19 @@ class P2PChat:
                 msg_type = struct.unpack('B', msg_type_data)[0]
                 
                 if msg_type == MessageType.PEER_REQUEST:
-                    #print(f"Recebido PeerRequest de {peer_ip}")
+                    if self.debug: print(f"Recebido PeerRequest de {peer_ip}")
                     self._handle_peer_request(peer_ip, sock)
                 elif msg_type == MessageType.PEER_LIST:
-                    #print(f"Recebido PeerList de {peer_ip}")
+                    if self.debug: print(f"Recebido PeerList de {peer_ip}")
                     self._handle_peer_list(peer_ip, sock)
                 elif msg_type == MessageType.ARCHIVE_REQUEST:
-                    #print(f"Recebido ArchiveRequest de {peer_ip}")
+                    if self.debug: print(f"Recebido ArchiveRequest de {peer_ip}")
                     self._handle_archive_request(peer_ip, sock)
                 elif msg_type == MessageType.ARCHIVE_RESPONSE:
                     print(f"Recebido ArchiveResponse de {peer_ip}")
                     self._handle_archive_response(peer_ip, sock)
                 else:
                     print(f"Tipo de mensagem desconhecido de {peer_ip}: {msg_type} (0x{msg_type:02x})")
-                    # Lê alguns bytes extras para debug
-                    try:
-                        extra_data = sock.recv(32)
-                        if extra_data:
-                            print(f"Dados recebidos: {(bytes([msg_type]) + extra_data[:16]).hex()}")
-                            # Try to decode as ASCII for debugging
-                            try:
-                                ascii_data = (bytes([msg_type]) + extra_data[:16]).decode('ascii', errors='ignore')
-                                print(f"Dados como ASCII: '{ascii_data}'")
-                            except:
-                                pass
-                    except:
-                        pass
-                    # Desconecta o peer pois o protocolo não é compatível
                     print(f"Desconectando {peer_ip} devido a tipo de mensagem desconhecido")
                     break
                     
@@ -313,8 +288,6 @@ class P2PChat:
             print(f"Timeout na conexão com {peer_ip}")
         except Exception as e:
             print(f"Erro ao lidar com mensagens de {peer_ip}: {e}")
-            import traceback
-            traceback.print_exc()
         finally:
             self._disconnect_peer(peer_ip)
     
@@ -343,7 +316,6 @@ class P2PChat:
             
             for peer_ip, sock in peer_connections:
                 try:
-                    # Envia PeerRequest
                     self._send_peer_request(sock)
                 except Exception as e:
                     print(f"Erro ao enviar PeerRequest para {peer_ip}: {e}")
@@ -360,11 +332,9 @@ class P2PChat:
         with self.peers_lock:
             peer_list = list(self.peers)
         
-        # Adiciona o próprio IP à lista
         if self.my_ip not in peer_list:
             peer_list.append(self.my_ip)
         
-        # Constrói a mensagem PeerList
         message = struct.pack('B', MessageType.PEER_LIST)
         message += struct.pack('!I', len(peer_list))
         
@@ -373,12 +343,11 @@ class P2PChat:
                 # Converte IP para inteiro de 4 bytes
                 ip_parts = ip.split('.')
                 if len(ip_parts) != 4:
-                    continue  # Skip invalid IP format
+                    continue
                 ip_int = struct.pack('!BBBB', int(ip_parts[0]), int(ip_parts[1]), 
                                    int(ip_parts[2]), int(ip_parts[3]))
                 message += ip_int
             except (ValueError, IndexError):
-                # Skip invalid IP addresses
                 continue
         
         sock.send(message)
@@ -386,7 +355,6 @@ class P2PChat:
     def _handle_peer_list(self, peer_ip: str, sock: socket.socket):
         """Lida com uma mensagem PeerList"""
         try:
-            # Lê o número de peers
             count_data = self._recv_exact(sock, 4)
             peer_count = struct.unpack('!I', count_data)[0]
             
@@ -398,15 +366,13 @@ class P2PChat:
                 ip_str = '.'.join(str(part) for part in ip_parts)
                 new_peers.append(ip_str)
             
-            ##print(f"Recebida lista de {len(new_peers)} peers de {peer_ip}: {new_peers}")
+            if self.debug: print(f"Recebida lista de {len(new_peers)} peers de {peer_ip}: {new_peers}")
             
             # Conecta aos novos peers em threads separadas para evitar bloqueio
             for new_peer_ip in new_peers:
                 if new_peer_ip != self.my_ip:
-                    # Verifica se já está conectado
                     with self.connections_lock:
                         if new_peer_ip not in self.connections:
-                            # Conecta em thread separada para não bloquear
                             threading.Thread(target=self._connect_to_peer, 
                                            args=(new_peer_ip,), daemon=True).start()
         except Exception as e:
@@ -414,7 +380,6 @@ class P2PChat:
     
     def _handle_archive_request(self, peer_ip: str, sock: socket.socket):
         """Lida com uma mensagem ArchiveRequest"""
-        # Responde com ArchiveResponse
         with self.history_lock:
             history_data = self._serialize_history()
         
@@ -466,14 +431,14 @@ class P2PChat:
                 
                 # Lê o verification code de forma robusta
                 try:
-                    verification_code = self._recv_exact(sock, VERIFICATION_CODE_SIZE)
+                    verification_code = self._recv_exact(sock, 16)
                 except ConnectionError:
                     print(f"Erro: conexão fechada ao ler verification code do chat {i}")
                     return
                 
                 # Lê o MD5 hash de forma robusta
                 try:
-                    md5_hash = self._recv_exact(sock, MD5_SIZE)
+                    md5_hash = self._recv_exact(sock, 16)
                 except ConnectionError:
                     print(f"Erro: conexão fechada ao ler MD5 hash do chat {i}")
                     return
@@ -533,15 +498,15 @@ class P2PChat:
                     return
                 
                 # Lê o verification code
-                verification_code = sock.recv(VERIFICATION_CODE_SIZE)
-                if len(verification_code) != VERIFICATION_CODE_SIZE:
-                    print(f"Erro: esperava {VERIFICATION_CODE_SIZE} bytes de verification code, recebeu {len(verification_code)}")
+                verification_code = sock.recv(16)
+                if len(verification_code) != 16:
+                    print(f"Erro: esperava {16} bytes de verification code, recebeu {len(verification_code)}")
                     return
                 
                 # Lê o MD5 hash
-                md5_hash = sock.recv(MD5_SIZE)
-                if len(md5_hash) != MD5_SIZE:
-                    print(f"Erro: esperava {MD5_SIZE} bytes de MD5 hash, recebeu {len(md5_hash)}")
+                md5_hash = sock.recv(16)
+                if len(md5_hash) != 16:
+                    print(f"Erro: esperava {16} bytes de MD5 hash, recebeu {len(md5_hash)}")
                     return
                 
                 # Cria o chat
@@ -605,7 +570,7 @@ class P2PChat:
         last_chat = history[-1]
         
         # Verifica se o hash MD5 começa com dois bytes zero
-        if last_chat.md5_hash[:HASH_PREFIX_ZEROS] != b'\x00' * HASH_PREFIX_ZEROS:
+        if last_chat.md5_hash[:2] != b'\x00' * 2:
             return False
         
         # Calcula o hash MD5 esperado
@@ -617,10 +582,10 @@ class P2PChat:
     def _calculate_chat_hash(self, history: List[Chat]) -> bytes:
         """Calcula o hash MD5 para validação do último chat"""
         if not history:
-            return b'\x00' * MD5_SIZE
+            return b'\x00' * 16
         
         # Pega os últimos 20 chats (ou todos se houver menos de 20)
-        chats_to_hash = history[-HISTORY_VALIDATION_SIZE:]
+        chats_to_hash = history[-20:]
         
         # Constrói a sequência S para hash
         sequence = b''
@@ -660,8 +625,8 @@ class P2PChat:
                 elif command.startswith('chat '):
                     message = command[5:].strip()
                     self._send_chat(message)
-                elif command == 'quit':
-                    self._shutdown()
+                elif command == 'debug':
+                    self.debug = not self.debug
                     break
                 else:
                     print("Comando desconhecido. Digite 'help' para ver os comandos.")
@@ -684,7 +649,7 @@ class P2PChat:
         print("  chat <mensagem>   - Envia uma mensagem de chat")
         print("  validate          - Valida o histórico atual")
         print("  status            - Mostra status do sistema")
-        print("  quit              - Encerra o programa")
+        print("  debug             - Toggle do modo debug")
     
     def _show_peers(self):
         """Mostra peers conectados"""
@@ -708,8 +673,8 @@ class P2PChat:
     
     def _send_chat(self, message: str):
         """Envia uma mensagem de chat"""
-        if len(message) > MAX_CHAT_LENGTH:
-            print(f"Mensagem muito longa (máximo {MAX_CHAT_LENGTH} caracteres)")
+        if len(message) > 255:
+            print(f"Mensagem muito longa (máximo 255 caracteres)")
             return
         
         # Verifica se a mensagem contém apenas caracteres alfanuméricos e espaços
@@ -751,10 +716,10 @@ class P2PChat:
             attempts += 1
             
             # Gera código verificador aleatório
-            verification_code = bytes([random.randint(0, 255) for _ in range(VERIFICATION_CODE_SIZE)])
+            verification_code = bytes([random.randint(0, 255) for _ in range(16)])
             
             # Cria chat temporário
-            temp_chat = Chat(message, verification_code, b'\x00' * MD5_SIZE)
+            temp_chat = Chat(message, verification_code, b'\x00' * 16)
             
             # Cria histórico temporário
             with self.history_lock:
@@ -764,7 +729,7 @@ class P2PChat:
             calculated_hash = self._calculate_chat_hash(temp_history)
             
             # Verifica se o hash começa com dois bytes zero
-            if calculated_hash[:HASH_PREFIX_ZEROS] == b'\x00' * HASH_PREFIX_ZEROS:
+            if calculated_hash[:2] == b'\x00' * 2:
                 # Sucesso! Cria o chat final
                 final_chat = Chat(message, verification_code, calculated_hash)
                 
