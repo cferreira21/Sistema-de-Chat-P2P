@@ -1,0 +1,33 @@
+RELATÓRIO TÉCNICO - SISTEMA DE CHAT P2P
+
+IMPLEMENTAÇÃO DO PROGRAMA
+
+O sistema de chat peer-to-peer foi implementado em Python utilizando a classe principal P2PChat que gerencia todas as funcionalidades do protocolo distribuído. A arquitetura é baseada em um modelo cliente-servidor híbrido onde cada peer atua simultaneamente como cliente e servidor, mantendo conexões TCP persistentes com outros nós da rede. O sistema utiliza threads dedicadas para gerenciar conexões simultâneas, garantindo que cada peer conectado tenha sua própria thread para processamento de mensagens, evitando bloqueios durante a comunicação.
+
+MECANISMOS DE CODIFICAÇÃO DE MENSAGENS
+
+A codificação de mensagens utiliza o módulo struct do Python para serialização binária estruturada. O protocolo define quatro tipos de mensagens: PEER_REQUEST (0x1) para solicitação de lista de peers, PEER_LIST (0x2) para resposta com peers conhecidos, ARCHIVE_REQUEST (0x3) para solicitação de histórico e ARCHIVE_RESPONSE (0x4) para envio do histórico completo. Cada mensagem inicia com um byte indicando seu tipo, seguido pelos dados específicos codificados em formato big-endian. Para mensagens PeerList, os endereços IP são codificados como quatro bytes representando cada octeto do endereço. As mensagens de chat são serializadas incluindo o tamanho do texto em um byte, seguido pelo texto em ASCII, código de verificação de 16 bytes e hash MD5 de 16 bytes.
+
+MECANISMOS DE RECEBIMENTO DE MENSAGENS
+
+O recebimento de mensagens é implementado através de sockets TCP utilizando socket.socket(socket.AF_INET, socket.SOCK_STREAM). Cada peer conectado possui uma thread dedicada executando a função _handle_peer_messages que processa mensagens de forma contínua. O sistema implementa a função _recv_exact que garante a leitura completa dos dados esperados, evitando problemas de fragmentação comum em redes TCP. Esta função executa um loop até receber exatamente o número de bytes solicitado, acumulando os dados recebidos e tratando desconexões inesperadas. Um timeout de 30 segundos é configurado para evitar bloqueios indefinidos durante a leitura de mensagens.
+
+MECANISMOS DE ENVIO DE MENSAGENS
+
+O envio utiliza conexões TCP persistentes mantidas no dicionário connections, permitindo reutilização das conexões estabelecidas. O sistema implementa thread safety através de locks (connections_lock, peers_lock, history_lock) para proteger estruturas compartilhadas durante acesso concorrente. Para broadcast de mensagens, o sistema itera sobre todas as conexões ativas e envia os dados simultaneamente. O tratamento de erros é robusto, desconectando automaticamente peers que apresentam falhas na comunicação e removendo-os das estruturas de dados. As mensagens são enviadas através do método send do socket, com tratamento de exceções para garantir a estabilidade da rede.
+
+BIBLIOTECA PARA CÁLCULO DO HASH MD5
+
+O sistema utiliza a biblioteca padrão hashlib do Python para cálculo do hash MD5. Esta biblioteca foi escolhida por ser parte da biblioteca padrão, não requerendo instalação adicional, e por possuir implementação otimizada em C que garante performance adequada. A função _calculate_chat_hash utiliza hashlib.md5(sequence).digest() para calcular o hash binário de 16 bytes. A hashlib oferece interface simples e consistente, suportando múltiplos algoritmos de hash, embora apenas MD5 seja utilizado neste projeto. A biblioteca é amplamente testada e reconhecida como confiável para aplicações que não requerem segurança criptográfica avançada.
+
+PROCESSO DE MINERAÇÃO
+
+O processo de mineração implementa um sistema de Proof of Work simplificado através da função _mine_chat. O algoritmo executa um loop infinito onde gera códigos de verificação aleatórios de 16 bytes utilizando random.randint(0, 255). Para cada tentativa, cria um chat temporário com a mensagem, código de verificação e hash zerado, calcula o hash MD5 do histórico atual incluindo esta nova mensagem, e verifica se o hash resultante inicia com dois bytes zero (\\x00\\x00). Esta condição representa uma dificuldade de 1 em 65.536 tentativas, proporcionando um desafio computacional adequado. O cálculo do hash considera os últimos 20 chats do histórico, construindo uma sequência binária que inclui todos os dados serializados dos chats anteriores e os dados da nova mensagem (excluindo seu próprio hash). Quando encontra um hash válido, retorna o chat final com o código de verificação correto e o hash calculado.
+
+INSTRUÇÕES PARA EXECUÇÃO
+
+Para executar o programa, é necessário Python 3.6 ou superior instalado no sistema, pois o código utiliza f-strings e type hints. O programa utiliza apenas bibliotecas padrão do Python (socket, threading, struct, hashlib, time, random, sys), não requerendo instalação de dependências adicionais. A execução básica consiste em executar "python3 p2p_chat_base.py" para iniciar o primeiro peer da rede. Para conectar peers adicionais, utilize "python3 p2p_chat_base.py <IP_DO_PRIMEIRO_PEER>" substituindo pelo endereço IP do peer inicial. É possível especificar o IP de binding com "python3 p2p_chat_base.py <IP_PEER_INICIAL> <IP_LOCAL_BIND>".
+
+Para teste local, execute o primeiro terminal com "python3 p2p_chat_base.py" e o segundo terminal com "python3 p2p_chat_base.py 127.0.0.1". Em redes locais, identifique o IP do primeiro computador e utilize-o como parâmetro nos demais peers. O sistema utiliza a porta TCP 51511, que deve estar liberada no firewall. Após iniciar, o programa apresenta uma interface de linha de comando onde comandos como "help" mostram opções disponíveis, "peers" lista conexões ativas, "hist" exibe mensagens, "chat <mensagem>" envia nova mensagem iniciando o processo de mineração, e "status" mostra informações detalhadas do sistema.
+
+Para solução de problemas, verifique se a porta 51511 está disponível com "netstat -tulpn | grep 51511", configure firewall se necessário com "sudo ufw allow 51511" no Ubuntu, e teste conectividade com "telnet <IP_PEER> 51511". O sistema implementa descoberta automática de peers a cada 5 segundos e timeouts de conexão de 5 segundos para novas conexões e 30 segundos para leitura de mensagens.
