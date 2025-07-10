@@ -57,7 +57,7 @@ class P2PChat:
     """Classe principal do sistema de chat P2P"""
     
     def __init__(self, initial_peer_ip: Optional[str] = None, bind_ip: Optional[str] = None):
-        self.bind_ip = bind_ip  # IP específico para bind
+        self.bind_ip = bind_ip
         self.my_ip = bind_ip if bind_ip else self._get_local_ip()
         self.peers: Set[str] = set()
         self.connections: Dict[str, socket.socket] = {}
@@ -92,7 +92,7 @@ class P2PChat:
         if self.initial_peer_ip:
             print(f"Conectando ao peer inicial: {self.initial_peer_ip}")
             if self._connect_to_peer(self.initial_peer_ip):
-                # Solicita histórico inicial
+                # Solicita histórico
                 time.sleep(1)
                 self._request_history_from_peers()
         
@@ -101,7 +101,6 @@ class P2PChat:
         print(f"Sistema P2P iniciado no IP {self.my_ip}:{PORT}")
         print("Digite 'help' para ver os comandos disponíveis")
         
-        # Loop principal de interface
         self._main_loop()
     
     def _start_server(self):
