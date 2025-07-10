@@ -402,15 +402,9 @@ class P2PChat:
             chat_count = struct.unpack('!I', count_data)[0]
             print(f"ArchiveResponse de {peer_ip}: {chat_count} chats")
             
-            # Valida o número de chats para evitar valores absurdos
-            if chat_count > 10000:  # Limite razoável
-                print(f"Número de chats muito alto ({chat_count}), possível erro de protocolo")
-                return
-            
-            # Lê cada chat individualmente
             new_history = []
             for i in range(chat_count):
-                # Lê o tamanho do texto (1 byte)
+                # Lê o tamanho do texto
                 try:
                     text_len_data = self._recv_exact(sock, 1)
                 except ConnectionError:
@@ -418,29 +412,22 @@ class P2PChat:
                     return
                 
                 text_len = struct.unpack('B', text_len_data)[0]
-                ##print(f"Chat {i}: text_len = {text_len}")
-                
-                # Lê o texto de forma robusta
                 try:
                     text_data = self._recv_exact(sock, text_len)
                 except ConnectionError:
-                    print(f"Erro: conexão fechada ao ler texto do chat {i}")
+                    print(f"Erro: erro de conexão ao ler texto do chat {i}")
                     return
                 
-                ##print(f"Chat {i}: text_data (hex) = {text_data.hex()}")
-                
-                # Lê o verification code de forma robusta
                 try:
                     verification_code = self._recv_exact(sock, 16)
                 except ConnectionError:
-                    print(f"Erro: conexão fechada ao ler verification code do chat {i}")
+                    print(f"Erro: erro de conexão ao ler verification code do chat {i}")
                     return
                 
-                # Lê o MD5 hash de forma robusta
                 try:
                     md5_hash = self._recv_exact(sock, 16)
                 except ConnectionError:
-                    print(f"Erro: conexão fechada ao ler MD5 hash do chat {i}")
+                    print(f"Erro: erro de conexão ao ler MD5 hash do chat {i}")
                     return
                 
                 # Cria o chat
@@ -449,74 +436,15 @@ class P2PChat:
                         text = text_data.decode('ascii')
                     except UnicodeDecodeError:
                         text = text_data.decode('utf-8', errors='replace')
-                        print(f"Chat {i}: texto decodificado como UTF-8 (pode conter caracteres substituídos)")
+                        print(f"Chat {i}: texto decodificado como UTF-8 (pode conter caracteres inválidos)")
                     chat = Chat(text, verification_code, md5_hash)
-                    print(f"codigo de verificação: '{chat.verification_code.hex()}', md5_hash: '{chat.md5_hash.hex()}'")
+                    if self.debug: print(f"codigo de verificação: '{chat.verification_code.hex()}', md5_hash: '{chat.md5_hash.hex()}'")
                     new_history.append(chat)
                 except Exception as e:
                     print(f"Erro ao decodificar texto do chat {i}: {e}")
                     return
             
             # Valida o histórico
-            if self._validate_history(new_history):
-                with self.history_lock:
-                    if len(new_history) > len(self.chat_history):
-                        self.chat_history = new_history
-                        print(f"Histórico atualizado com {len(new_history)} chats de {peer_ip}")
-                    elif len(new_history) == len(self.chat_history):
-                        print(f"Histórico recebido de {peer_ip} tem mesmo tamanho ({len(new_history)} chats)")
-                    else:
-                        print(f"Histórico recebido de {peer_ip} é menor ({len(new_history)} vs {len(self.chat_history)})")
-            else:
-                print(f"Histórico inválido recebido de {peer_ip} com {len(new_history)} chats")
-        except Exception as e:
-            print(f"Erro ao processar ArchiveResponse de {peer_ip}: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _handle_archive_response_with_count(self, peer_ip: str, sock: socket.socket, chat_count: int):
-        """Lida com uma mensagem ArchiveResponse quando o count já foi lido"""
-        try:
-            print(f"Processando ArchiveResponse de {peer_ip} com {chat_count} chats")
-            
-            # Lê cada chat individualmente
-            new_history = []
-            for i in range(chat_count):
-                # Lê o tamanho do texto (1 byte)
-                text_len_data = sock.recv(1)
-                if not text_len_data:
-                    print(f"Erro: não conseguiu ler tamanho do texto do chat {i}")
-                    return
-                
-                text_len = struct.unpack('B', text_len_data)[0]
-                print(f"Chat {i}: tamanho do texto = {text_len}")
-                
-                # Lê o texto
-                text_data = sock.recv(text_len)
-                if len(text_data) != text_len:
-                    print(f"Erro: esperava {text_len} bytes de texto, recebeu {len(text_data)}")
-                    return
-                
-                # Lê o verification code
-                verification_code = sock.recv(16)
-                if len(verification_code) != 16:
-                    print(f"Erro: esperava {16} bytes de verification code, recebeu {len(verification_code)}")
-                    return
-                
-                # Lê o MD5 hash
-                md5_hash = sock.recv(16)
-                if len(md5_hash) != 16:
-                    print(f"Erro: esperava {16} bytes de MD5 hash, recebeu {len(md5_hash)}")
-                    return
-                
-                # Cria o chat
-                text = text_data.decode('ascii')
-                chat = Chat(text, verification_code, md5_hash)
-                new_history.append(chat)
-                print(f"Chat {i}: '{text}'")
-            
-            # Valida o histórico
-            print(f"Validando histórico com {len(new_history)} chats...")
             if self._validate_history(new_history):
                 with self.history_lock:
                     if len(new_history) > len(self.chat_history):
@@ -569,14 +497,11 @@ class P2PChat:
         
         last_chat = history[-1]
         
-        # Verifica se o hash MD5 começa com dois bytes zero
         if last_chat.md5_hash[:2] != b'\x00' * 2:
             return False
         
-        # Calcula o hash MD5 esperado
         expected_hash = self._calculate_chat_hash(history)
         
-        # Compara com o hash armazenado
         return last_chat.md5_hash == expected_hash
     
     def _calculate_chat_hash(self, history: List[Chat]) -> bytes:
@@ -587,7 +512,7 @@ class P2PChat:
         # Pega os últimos 20 chats (ou todos se houver menos de 20)
         chats_to_hash = history[-20:]
         
-        # Constrói a sequência S para hash
+        # Constrói a sequência para hash
         sequence = b''
         for i, chat in enumerate(chats_to_hash):
             if i == len(chats_to_hash) - 1:
@@ -611,11 +536,11 @@ class P2PChat:
                     self._show_help()
                 elif command == 'peers':
                     self._show_peers()
-                elif command == 'history':
+                elif command == 'hist':
                     self._show_history()
-                elif command == 'request':
+                elif command == 'req':
                     self._request_history_from_peers()
-                elif command == 'validate':
+                elif command == 'val':
                     self._validate_current_history()
                 elif command == 'status':
                     self._show_status()
@@ -627,14 +552,11 @@ class P2PChat:
                     self._send_chat(message)
                 elif command == 'debug':
                     self.debug = not self.debug
-                    break
+                    print(f"Modo debug {'ativado' if self.debug else 'desativado'}")
                 else:
                     print("Comando desconhecido. Digite 'help' para ver os comandos.")
                     
             except KeyboardInterrupt:
-                self._shutdown()
-                break
-            except EOFError:
                 self._shutdown()
                 break
     
@@ -643,11 +565,11 @@ class P2PChat:
         print("\nComandos disponíveis:")
         print("  help              - Mostra esta ajuda")
         print("  peers             - Lista peers conectados")
-        print("  history           - Mostra histórico de chats")
-        print("  request           - Solicita histórico de todos os peers")
+        print("  hist              - Mostra histórico de chats")
+        print("  req               - Solicita histórico de todos os peers")
         print("  connect <ip>      - Conecta a um peer específico")
         print("  chat <mensagem>   - Envia uma mensagem de chat")
-        print("  validate          - Valida o histórico atual")
+        print("  val               - Valida o histórico atual")
         print("  status            - Mostra status do sistema")
         print("  debug             - Toggle do modo debug")
     
@@ -684,13 +606,11 @@ class P2PChat:
         
         print(f"Minerando chat: '{message}'...")
         
-        # Minera o chat em thread separada para não bloquear a interface
         threading.Thread(target=self._mine_and_send_chat, args=(message,), daemon=True).start()
     
     def _mine_and_send_chat(self, message: str):
         """Minera um chat e o envia para todos os peers"""
         try:
-            # Minera o chat
             new_chat = self._mine_chat(message)
             
             if new_chat:
@@ -699,7 +619,7 @@ class P2PChat:
                     self.chat_history.append(new_chat)
                     print(f"Chat minerado e adicionado ao histórico: '{message}'")
                 
-                # Envia para todos os peers
+                # depois para todos os peers
                 self._broadcast_history()
             else:
                 print("Erro ao minerar o chat")
@@ -709,39 +629,20 @@ class P2PChat:
     
     def _mine_chat(self, message: str) -> Optional[Chat]:
         """Minera um chat encontrando um código verificador válido"""
-        start_time = time.time()
-        attempts = 0
         
         while True:
-            attempts += 1
             
-            # Gera código verificador aleatório
             verification_code = bytes([random.randint(0, 255) for _ in range(16)])
-            
-            # Cria chat temporário
             temp_chat = Chat(message, verification_code, b'\x00' * 16)
             
-            # Cria histórico temporário
             with self.history_lock:
                 temp_history = self.chat_history + [temp_chat]
             
-            # Calcula hash
             calculated_hash = self._calculate_chat_hash(temp_history)
             
-            # Verifica se o hash começa com dois bytes zero
             if calculated_hash[:2] == b'\x00' * 2:
-                # Sucesso! Cria o chat final
                 final_chat = Chat(message, verification_code, calculated_hash)
-                
-                elapsed = time.time() - start_time
-                print(f"Chat minerado com sucesso! Tentativas: {attempts}, Tempo: {elapsed:.2f}s")
                 return final_chat
-            
-            # Mostra progresso a cada 10000 tentativas
-            if attempts % 10000 == 0:
-                elapsed = time.time() - start_time
-                rate = attempts / elapsed if elapsed > 0 else 0
-                print(f"Minerando... Tentativas: {attempts}, Taxa: {rate:.0f}/s")
     
     def _broadcast_history(self):
         """Envia o histórico atual para todos os peers"""
@@ -769,8 +670,7 @@ class P2PChat:
                     self._disconnect_peer(peer_ip)
     
     def _shutdown(self):
-        """Encerra o sistema"""
-        print("\nEncerrando sistema...")
+        print("\nEncerrando...")
         self.running = False
         
         # Fecha todas as conexões
@@ -789,7 +689,6 @@ class P2PChat:
                 pass
 
 def main():
-    """Função principal"""
     initial_peer = None
     bind_ip = None
     
